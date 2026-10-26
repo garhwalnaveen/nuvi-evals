@@ -1,3 +1,6 @@
+import { join } from "node:path";
+
+import { withHarnessUsage } from "../harness-llm";
 import type {
   AgentEvent,
   AgentHatchInput,
@@ -13,6 +16,7 @@ import {
   readRunMetadata,
   readTranscript,
   readUsage,
+  runArtifacts,
   runMetrics,
   type MetricResult,
   writeMetricResults,
@@ -377,6 +381,13 @@ async function sendAndPersistSimulatorMessage(input: {
 }
 
 export async function runEvalOnce(input: EvalRunInput): Promise<EvalRunResult> {
+  return withHarnessUsage(
+    join(runArtifacts(input.runId).runDir, "harness-usage.jsonl"),
+    () => executeEvalOnce(input),
+  );
+}
+
+async function executeEvalOnce(input: EvalRunInput): Promise<EvalRunResult> {
   const sessionId = input.sessionId ?? input.runId;
   const sessionLabel = input.sessionLabel;
   const cliArgv = input.cliArgv;

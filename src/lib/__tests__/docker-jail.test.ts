@@ -36,6 +36,38 @@ class FakeRunner implements CommandRunner {
 }
 
 describe("docker egress jail", () => {
+  test("removes its sidecar and network if credential staging fails", async () => {
+    const calls: string[][] = [];
+    const runner: CommandRunner = {
+      run: async (_command, args, options) => {
+        calls.push(args);
+        return {
+          exitCode: options?.stdin ? 1 : 0,
+          stdout: "",
+          stderr: options?.stdin ? "credential staging failed" : "",
+        };
+      },
+      spawn: () => {
+        throw new Error("spawn not used");
+      },
+    };
+    await expect(
+      applyDockerEgressJail(runner, {
+        runId: "eval-credential-failure",
+        recordingDir: "/tmp/eval-credential-failure",
+        cloudflare: {
+          accountId: "0".repeat(32),
+          token: "test-token",
+          models: ["@cf/example/model"],
+        },
+      }),
+    ).rejects.toThrow("stage model-only Cloudflare proxy credentials");
+    expect(calls.slice(-2)).toEqual([
+      ["rm", "-f", "eval-credential-failure-egress-jail"],
+      ["network", "rm", "eval-credential-failure-egress-net"],
+    ]);
+  });
+
   test("derives deterministic Docker names from the run id", () => {
     // GIVEN a run id
     // WHEN deriving the assistant, jail, and network names

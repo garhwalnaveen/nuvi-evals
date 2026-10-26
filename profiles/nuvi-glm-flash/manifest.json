@@ -1,0 +1,8 @@
+{
+  "species": "nuvi",
+  "description": "Nuvi with GLM 5.3 Flash through direct Cloudflare inference. Auxiliary call sites use DeepSeek V4 Flash. This is not the managed platform transport.",
+  "cloudflare": {
+    "model": "@cf/zai-org/glm-5.3-flash",
+    "auxiliaryModel": "@cf/deepseek-ai/deepseek-v4-flash-0731"
+  }
+}

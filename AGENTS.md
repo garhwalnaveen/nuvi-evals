@@ -37,7 +37,26 @@ Single (1×1), suite (1×M), ablation (N×1), full matrix (N×M). Same codepath.
 
 **Agent adapter (per species):** thin CLI process wrapper. Owns invocation, stdin/stdout format, and normalizing the species' native interaction model onto the shared `send` / `events()` contract. Each test gets a fresh process — no sharing across tests (parallelization-ready). The Vellum adapter hatches a fresh Docker instance, sends user messages via `vellum message`, and reads assistant output from a live `vellum events --json` SSE stream. The Hermes adapter has no streaming CLI: a turn is a single-shot `hermes -z "<prompt>"` that prints only the final answer, so `send` runs one shot per message and `events()` synthesizes a single `message_chunk` from its stdout. **Presenting a multi-turn conversation onto the shared `send`/`events()` contract is the adapter's job.** Vellum resumes a conversation key so its daemon carries prior turns; a Hermes `-z` shot is stateless and ignores `--resume`/`--continue`, so the adapter replays the conversation so far into each prompt (see `buildHermesTurnPrompt`) for turn N to see turns 1..N-1, tracking no session ids. Hermes's [memory subsystem](https://hermes-agent.nousresearch.com/docs) (files under `/opt/data/memories/` auto-loaded each shot) is a separate, longer-horizon channel for cross-session recall, not the within-conversation transcript. The adapter does **not** own cost — see the egress jail below.
 
-**Simulator:** LLM-driven user (Claude Haiku). Same model across all tests and species; represents any-possible-user generality. Seeded for pseudo-determinism.
+**Simulator and judge:** Harness-owned calls share `src/lib/harness-llm.ts`.
+`EVALS_LLM_PROVIDER` selects Anthropic (default) or Azure Responses.
+`EVALS_LLM_MODEL` selects the model; Azure defaults to `gpt-6-astra`.
+Keep the provider, model and tuning fixed across compared profiles. Personal-
+intelligence runs record harness identity and token usage separately in
+`harness-usage.jsonl`; it is not assistant egress usage, and unknown monetary
+cost must remain unpriced.
+
+**Nuvi adapter:** `src/lib/adapters/nuvi.ts` reuses the CLI adapter protocol,
+with isolated CLI state and fresh Docker instances. Explicit Cloudflare
+profiles use direct inference, not the managed platform route. Account
+credentials belong only to the recording sidecar's tmpfs. The request hook
+must restrict credential forwarding to the selected account, exact completion
+route and allowed models. Never pass the account credential to the assistant
+container or persist it in run artifacts. Keep auxiliary model settings fixed
+and disclose the transport and tuning in comparisons.
+Local image reuse is opt-in through `EVALS_NUVI_LOCAL_IMAGE_TAG` and
+`scripts/serve-local-nuvi-images.ts`. The loopback loader verifies pinned
+image identities and rejects other references. Reuse images, never test
+workspaces or conversation state.
 
 **Egress jail:** a recording sidecar (`mitmproxy`) that owns a network namespace and installs an iptables allowlist + NAT REDIRECT so all outbound TCP — not just proxy-aware clients — is transparently intercepted and recorded. It runs in **owner mode** (`applyDockerEgressJail`, `src/lib/egress/docker-jail.ts`): the jail owns a fresh network namespace and is created _first_, with all rules + the interception CA in place before any tenant exists. Tenants are then born into the already-jailed stack, so their very first outbound TLS is already behind the proxy — there is no pre-jail window for a keep-alive connection to escape unrecorded. Because the jail owns the namespace, it (not a tenant) publishes host ports, and on teardown the tenants are retired _before_ `jail.stop()` (the namespace owner must outlive its tenants).
 

@@ -1,6 +1,7 @@
 /** `evals run` — Cartesian profile × test runner. */
 import type { Command } from "commander";
 
+import { prepareAzureCredentials } from "../lib/azure-credentials";
 import {
   createConsoleReporter,
   createSummaryOnlyReporter,
@@ -170,6 +171,9 @@ export function registerRunCommand(program: Command): void {
         workers?: number;
         launcher?: boolean;
       }) => {
+        if (!opts.launcher) {
+          await prepareAzureCredentials();
+        }
         // Live-events state the signal handlers close over. The handlers
         // are registered before the emitter/bridge exist, so they observe
         // them through these let-refs: assigned when live mode is enabled

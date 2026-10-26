@@ -4,6 +4,7 @@ import { readFile, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { assertSuccess, type CommandRunner } from "../runtime/command-runner";
+import type { CloudflareCredentials } from "../cloudflare-credentials";
 
 /** Host→container port mapping the jail publishes for its namespace tenants. */
 export interface JailPublishPort {
@@ -53,6 +54,8 @@ export interface DockerEgressJailConfig {
    * the iptables DROP-default and fail closed at TCP connect time.
    */
   pluginFixturesDir?: string;
+  /** Credential belongs to the recording sidecar, never its assistant tenant. */
+  cloudflare?: CloudflareCredentials;
 }
 
 export interface DockerEgressJail {
@@ -162,6 +165,7 @@ export const RECORDED_USAGE_HOSTS = [
   "api.anthropic.com",
   "api.fireworks.ai",
   "openrouter.ai",
+  "api.cloudflare.com",
 ];
 
 /**
@@ -359,7 +363,7 @@ async function readRecordingUsage(
 const RECORDING_CA_FILENAME = "mitmproxy-ca-cert.pem";
 const ASSISTANT_CA_TARGET =
   "/usr/local/share/ca-certificates/vellum-evals-mitmproxy.crt";
-const CA_POLL_TIMEOUT_MS = 10_000;
+const CA_POLL_TIMEOUT_MS = 60_000;
 const CA_POLL_INTERVAL_MS = 100;
 
 /**
@@ -438,6 +442,28 @@ export function dockerEgressJailNetworkName(runId: string): string {
   return `${runId}-egress-net`;
 }
 
+export async function stageCloudflareCredentials(
+  runner: CommandRunner,
+  runId: string,
+  credentials: CloudflareCredentials,
+): Promise<void> {
+  const result = await runner.run(
+    "docker",
+    [
+      "exec",
+      "-i",
+      "-u",
+      "0",
+      dockerEgressJailContainerName(runId),
+      "sh",
+      "-c",
+      "umask 077; cat > /run/eval-credentials/cloudflare.tmp && chown 1000:1000 /run/eval-credentials/cloudflare.tmp && mv /run/eval-credentials/cloudflare.tmp /run/eval-credentials/cloudflare.json && chown 1000:1000 /run/eval-credentials",
+    ],
+    { stdin: JSON.stringify(credentials) },
+  );
+  assertSuccess(result, "stage model-only Cloudflare proxy credentials");
+}
+
 /**
  * Create the recording egress jail as the owner of a fresh network
  * namespace, before any tenant container exists.
@@ -508,6 +534,9 @@ export async function applyDockerEgressJail(
       ]
     : [];
 
+  const cloudflareArgs = config.cloudflare
+    ? ["--tmpfs", "/run/eval-credentials:rw,noexec,nosuid,size=64k,mode=0700"]
+    : [];
   const result = await runner.run("docker", [
     "run",
     "-d",
@@ -537,30 +566,46 @@ export async function applyDockerEgressJail(
     `${resolve(recordingDir)}:/recording`,
     ...publishArgs,
     ...fixturesArgs,
+    ...cloudflareArgs,
     recordingImage,
   ]);
   assertSuccess(result, `create recording docker egress jail ${jailContainer}`);
 
-  // Block until the sidecar has written the interception CA, so callers
-  // can hand its path to tenants (`hatch --assistant-ca-cert`) knowing the
-  // file exists. The sidecar's iptables rules are installed in the same
-  // entrypoint before `mitmdump` execs, so once the CA is present the jail
-  // is fully armed.
-  const caCertPath = await waitForRecordingCa(recordingDir);
-
-  return {
-    netnsContainer: jailContainer,
-    caCertPath,
-    readUsageRecords: () => readRecordingUsage(recordingDir),
-    stop: async () => {
-      await runner
-        .run("docker", ["rm", "-f", jailContainer])
-        .catch(() => undefined);
-      await runner
-        .run("docker", ["network", "rm", jailNetwork])
-        .catch(() => undefined);
-    },
+  const stop = async () => {
+    await runner
+      .run("docker", ["rm", "-f", jailContainer])
+      .catch(() => undefined);
+    await runner
+      .run("docker", ["network", "rm", jailNetwork])
+      .catch(() => undefined);
   };
+
+  try {
+    if (config.cloudflare) {
+      await stageCloudflareCredentials(
+        runner,
+        config.runId,
+        config.cloudflare,
+      );
+    }
+
+    // Block until the sidecar has written the interception CA, so callers
+    // can hand its path to tenants (`hatch --assistant-ca-cert`) knowing the
+    // file exists. The sidecar's iptables rules are installed in the same
+    // entrypoint before `mitmdump` execs, so once the CA is present the jail
+    // is fully armed.
+    const caCertPath = await waitForRecordingCa(recordingDir);
+
+    return {
+      netnsContainer: jailContainer,
+      caCertPath,
+      readUsageRecords: () => readRecordingUsage(recordingDir),
+      stop,
+    };
+  } catch (error) {
+    await stop();
+    throw error;
+  }
 }
 
 export function vellumDockerAssistantContainer(instanceName: string): string {

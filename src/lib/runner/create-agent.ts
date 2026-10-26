@@ -1,9 +1,13 @@
 import type { AgentHatchInput, BaseAgent } from "../adapter";
 import { createHermesAgent } from "../adapters/hermes";
 import { createVellumAgent } from "../adapters/vellum";
+import { createNuviAgent } from "../adapters/nuvi";
 
 export function createAgent(input: AgentHatchInput): BaseAgent {
   switch (input.profile.manifest.species) {
+    case "nuvi": {
+      return createNuviAgent(input);
+    }
     case "vellum": {
       // EVALS_VELLUM_CLI pins the `vellum` CLI binary (e.g. one built from
       // the same checkout as EVALS_ASSISTANT_SOURCE for a baseline-at-commit

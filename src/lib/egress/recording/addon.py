@@ -69,6 +69,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import mock_github_handler  # noqa: E402
 import usage_parser  # noqa: E402
+import cloudflare_auth  # noqa: E402
 
 try:
     from mitmproxy import ctx, http  # type: ignore[import-not-found]
@@ -113,6 +114,7 @@ PLUGIN_FIXTURES_DIR: Optional[str] = os.environ.get("PLUGIN_FIXTURES_DIR")
 OPENAI_COMPATIBLE_HOSTS = {
     "api.fireworks.ai": "fireworks",
     "openrouter.ai": "openrouter",
+    "api.cloudflare.com": "cloudflare",
 }
 
 # Lock guards the NDJSON file writer — mitmproxy can fire `response`
@@ -191,7 +193,20 @@ def request(flow) -> None:  # type: ignore[no-untyped-def]
     Errors are swallowed via the same ctx.log pattern as the response
     hook so a single bad request can never crash mitmproxy.
     """
-    if http is None or PLUGIN_FIXTURES_DIR is None:
+    if http is None:
+        return
+    if (flow.request.pretty_host or "").lower() == "api.cloudflare.com":
+        try:
+            flow.request.headers["Authorization"] = cloudflare_auth.authorization(
+                flow.request.method, flow.request.path, _decoded_body(flow.request)
+            )
+        except Exception:
+            flow.response = http.Response.make(
+                403, b"Cloudflare request is not authorized for this eval",
+                {"content-type": "text/plain"},
+            )
+        return
+    if PLUGIN_FIXTURES_DIR is None:
         return
     try:
         request = flow.request

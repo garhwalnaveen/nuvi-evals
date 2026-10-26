@@ -15,6 +15,7 @@ import { assertSafeId, getProfilesDir, resolveUnder } from "./catalog";
 
 const SPECIES = [
   "vellum",
+  "nuvi",
   "openclaw",
   "claude-code",
   "codex",
@@ -24,6 +25,12 @@ const SPECIES = [
 export const ProfileManifestSchema = z.object({
   /** Agent species — the adapter selector. */
   species: z.enum(SPECIES),
+  cloudflare: z
+    .object({
+      model: z.string().regex(/^@cf\/[a-z0-9./_-]+$/),
+      auxiliaryModel: z.string().regex(/^@cf\/[a-z0-9./_-]+$/),
+    })
+    .optional(),
   /**
    * Human-readable summary of what this profile is — its agent, what setup
    * shapes it, and what it's for. Surfaced verbatim in the report's

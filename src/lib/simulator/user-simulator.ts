@@ -1,5 +1,14 @@
 import { readFile } from "node:fs/promises";
 
+import {
+  DEFAULT_ANTHROPIC_MODEL,
+  requestHarnessCompletion,
+  resolveHarnessLlmConfig,
+  type HarnessCompletion,
+  type HarnessCompletionRequest,
+  type HarnessLlmConfig,
+  type HarnessLlmOptions,
+} from "../harness-llm";
 import type {
   Simulator,
   SimulatorDecision,
@@ -8,7 +17,7 @@ import type {
 } from "./types";
 import type { TranscriptTurn } from "../transcript";
 
-export const DEFAULT_SIMULATOR_MODEL = "claude-haiku-4-5-20251001";
+export const DEFAULT_SIMULATOR_MODEL = DEFAULT_ANTHROPIC_MODEL;
 export const DEFAULT_MAX_TURNS = 100;
 export const MAX_OUTPUT_TOKENS = 8192;
 /** Name of the tool the simulator calls to resolve a pending confirmation. */
@@ -25,66 +34,23 @@ const SIMULATOR_PERSONA_LINES = [
 const SIMULATOR_SECRECY_LINE =
   "Do not reveal hidden test answers unless the SPEC explicitly says to reveal them.";
 
-interface AnthropicMessage {
-  role: "user" | "assistant";
-  content: string;
-}
+type SimulatorMessage = HarnessCompletionRequest["messages"][number];
+type SimulatorRequest = Omit<HarnessCompletionRequest, "purpose" | "maxTokens">;
 
-interface AnthropicToolSpec {
-  name: string;
-  description: string;
-  input_schema: {
-    type: "object";
-    properties: Record<string, unknown>;
-    required?: string[];
-  };
-}
-
-interface AnthropicToolChoice {
-  type: "tool";
-  name: string;
-}
-
-interface SimulatorRequest {
-  system: string;
-  messages: AnthropicMessage[];
-  tools: AnthropicToolSpec[];
-  /** Forces a specific tool call; omitted to let the model free-text. */
-  toolChoice?: AnthropicToolChoice;
-  /** Phrase describing the call, used in the failure message. */
-  failureLabel: string;
-}
-
-interface UserSimulatorOptions {
-  apiKey?: string;
-  model?: string;
+interface UserSimulatorOptions extends HarnessLlmOptions {
   maxTurns?: number;
 }
 
-interface TextPart {
-  type: "text";
-  text: string;
-}
-
-interface ToolUsePart {
-  type: "tool_use";
-  name: string;
-  input?: Record<string, unknown>;
-}
-
-type ContentPart = TextPart | ToolUsePart;
-
-interface AnthropicResponseBody {
-  content?: ContentPart[];
-  stop_reason?: string;
-}
+type ContentPart = NonNullable<HarnessCompletion["content"]>[number];
+type TextPart = Extract<ContentPart, { type: "text" }>;
+type ToolUsePart = Extract<ContentPart, { type: "tool_use" }>;
 
 function simulatorTurnCount(transcript: TranscriptTurn[]): number {
   return transcript.filter((turn) => turn.role === "simulator").length;
 }
 
-function coalesceMessages(messages: AnthropicMessage[]): AnthropicMessage[] {
-  const coalesced: AnthropicMessage[] = [];
+function coalesceMessages(messages: SimulatorMessage[]): SimulatorMessage[] {
+  const coalesced: SimulatorMessage[] = [];
   for (const message of messages) {
     const previous = coalesced.at(-1);
     if (previous?.role === message.role) {
@@ -98,7 +64,7 @@ function coalesceMessages(messages: AnthropicMessage[]): AnthropicMessage[] {
 
 function transcriptToSimulatorMessages(
   transcript: TranscriptTurn[],
-): AnthropicMessage[] {
+): SimulatorMessage[] {
   const messages = transcript.map((turn) => ({
     role:
       turn.role === "assistant" ? ("user" as const) : ("assistant" as const),
@@ -158,7 +124,7 @@ function toolDecision(parts: ContentPart[]): SimulatorDecision | undefined {
  * keep throwing `SimulatorParseError` so genuine bugs remain visible.
  */
 function implicitEndDecision(
-  body: AnthropicResponseBody,
+  body: HarnessCompletion,
 ): SimulatorDecision | undefined {
   if (body.stop_reason !== "end_turn") return undefined;
   const parts = body.content ?? [];
@@ -189,10 +155,7 @@ function describeContentPart(part: ContentPart): string {
     }
     return `text(length=${part.text.length})`;
   }
-  if (part.type === "tool_use") {
-    return `tool_use(name=${part.name})`;
-  }
-  return `type=${(part as { type?: string }).type ?? "unknown"}`;
+  return `tool_use(name=${part.name})`;
 }
 
 function summarizeContentParts(parts: ContentPart[]): string {
@@ -200,7 +163,7 @@ function summarizeContentParts(parts: ContentPart[]): string {
   return `[${parts.map(describeContentPart).join(", ")}]`;
 }
 
-function clipForDiagnostic(body: AnthropicResponseBody): string {
+function clipForDiagnostic(body: HarnessCompletion): string {
   const json = JSON.stringify(body);
   if (json.length <= PARSE_FAILURE_BODY_CLIP) return json;
   const remaining = json.length - PARSE_FAILURE_BODY_CLIP;
@@ -208,7 +171,7 @@ function clipForDiagnostic(body: AnthropicResponseBody): string {
 }
 
 /**
- * Thrown when the Anthropic response can't be decoded into a `send` or `end`
+ * Thrown when the simulator response can't be decoded into a `send` or `end`
  * decision (empty content array, whitespace-only text, hit max_tokens with no
  * usable output, novel tool call, refusal, …).
  *
@@ -230,7 +193,7 @@ export class SimulatorParseError extends Error {
   }
 }
 
-function parseDecision(body: AnthropicResponseBody): SimulatorDecision {
+function parseDecision(body: HarnessCompletion): SimulatorDecision {
   const parts = body.content ?? [];
   const decision =
     toolDecision(parts) ?? textDecision(parts) ?? implicitEndDecision(body);
@@ -270,9 +233,7 @@ function confirmationPrompt(request: ToolConfirmationRequest): string {
   return lines.join("\n");
 }
 
-function parseConfirmationDecision(
-  body: AnthropicResponseBody,
-): SimulatorDecision {
+function parseConfirmationDecision(body: HarnessCompletion): SimulatorDecision {
   const parts = body.content ?? [];
   for (const part of parts) {
     if (part.type !== "tool_use" || part.name !== CONFIRMATION_TOOL_NAME) {
@@ -303,19 +264,11 @@ function parseConfirmationDecision(
 }
 
 export class UserSimulator implements Simulator {
-  private readonly apiKey: string;
-  private readonly model: string;
+  private readonly llm: HarnessLlmConfig;
   private readonly maxTurns: number;
 
   constructor(opts: UserSimulatorOptions = {}) {
-    const apiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      throw new Error(
-        "ANTHROPIC_API_KEY is required to run the user simulator",
-      );
-    }
-    this.apiKey = apiKey;
-    this.model = opts.model ?? DEFAULT_SIMULATOR_MODEL;
+    this.llm = resolveHarnessLlmConfig(opts);
     this.maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
   }
 
@@ -444,40 +397,15 @@ export class UserSimulator implements Simulator {
     return parseConfirmationDecision(body);
   }
 
-  /**
-   * One round-trip to the simulator model. Both the turn-taking decision and
-   * the mid-turn confirmation verdict are single Anthropic calls that differ
-   * only in their prompt, tools, and parser, so they share this transport.
-   */
   private async requestCompletion(
     request: SimulatorRequest,
-  ): Promise<AnthropicResponseBody> {
-    const payload: Record<string, unknown> = {
-      model: this.model,
-      max_tokens: MAX_OUTPUT_TOKENS,
-      temperature: 0,
-      system: request.system,
-      messages: request.messages,
-      tools: request.tools,
-    };
-    if (request.toolChoice) {
-      payload.tool_choice = request.toolChoice;
-    }
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": this.apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify(payload),
+  ): Promise<HarnessCompletion> {
+    return requestHarnessCompletion(this.llm, {
+      ...request,
+      purpose: "simulator",
+      failureLabel: `User simulator ${request.failureLabel}`,
+      maxTokens: MAX_OUTPUT_TOKENS,
     });
-    if (!response.ok) {
-      throw new Error(
-        `User simulator ${request.failureLabel} failed ${response.status}: ${await response.text()}`,
-      );
-    }
-    return (await response.json()) as AnthropicResponseBody;
   }
 }
 

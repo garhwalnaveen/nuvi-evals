@@ -81,9 +81,9 @@ fi
 #   localhost (the assistant container shares netns with us).
 ALLOW_HOSTS="${ALLOW_HOSTS:-api.anthropic.com}"
 if [ -n "${PLUGIN_FIXTURES_DIR:-}" ]; then
-  RECORDING_TLS_HOSTS_RE="${RECORDING_TLS_HOSTS_RE:-^(api\\.anthropic\\.com|api\\.fireworks\\.ai|openrouter\\.ai|api\\.github\\.com|raw\\.githubusercontent\\.com):443$}"
+  RECORDING_TLS_HOSTS_RE="${RECORDING_TLS_HOSTS_RE:-^(api\\.anthropic\\.com|api\\.fireworks\\.ai|openrouter\\.ai|api\\.cloudflare\\.com|api\\.github\\.com|raw\\.githubusercontent\\.com):443$}"
 else
-  RECORDING_TLS_HOSTS_RE="${RECORDING_TLS_HOSTS_RE:-^(api\\.anthropic\\.com|api\\.fireworks\\.ai|openrouter\\.ai):443$}"
+  RECORDING_TLS_HOSTS_RE="${RECORDING_TLS_HOSTS_RE:-^(api\\.anthropic\\.com|api\\.fireworks\\.ai|openrouter\\.ai|api\\.cloudflare\\.com):443$}"
 fi
 
 exec su -s /bin/sh -c "exec mitmdump \

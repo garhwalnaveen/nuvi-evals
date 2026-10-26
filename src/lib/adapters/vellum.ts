@@ -21,6 +21,7 @@ import {
   VELLUM_ALLOW_HOSTS,
   DEFAULT_PLUGIN_INSTALL_ALLOW_HOSTS,
   type DockerEgressJail,
+  type DockerEgressJailConfig,
   vellumDockerAssistantContainer,
   vellumDockerSiblingContainers,
 } from "../egress/docker-jail";
@@ -328,16 +329,36 @@ export class VellumAgent implements BaseAgent {
   readonly id: string;
   conversationKey: string;
 
-  private readonly profile: Profile;
-  private readonly runner: CommandRunner;
-  private readonly cliCommand: string;
+  protected readonly profile: Profile;
+  protected readonly runner: CommandRunner;
+  protected readonly cliCommand: string;
   private readonly testId: string;
   private readonly assistantContainerName: string;
-  private readonly processEnv: NodeJS.ProcessEnv;
+  protected readonly processEnv: NodeJS.ProcessEnv;
   private eventsProcess?: SpawnedProcess;
   private jail?: DockerEgressJail;
   private hatched = false;
   private stopped = false;
+
+  protected get species(): "vellum" | "nuvi" {
+    return "vellum";
+  }
+
+  protected async extraJailConfig(): Promise<
+    Pick<DockerEgressJailConfig, "cloudflare" | "allowHosts">
+  > {
+    return {};
+  }
+
+  protected extraHatchArgs(): string[] {
+    return [];
+  }
+
+  protected sourceHatchArgs(source: string): string[] {
+    return ["--source", source];
+  }
+
+  protected async configureRuntime(): Promise<void> {}
 
   constructor(opts: VellumAgentOptions) {
     this.profile = opts.profile;
@@ -353,9 +374,9 @@ export class VellumAgent implements BaseAgent {
 
   async hatch(): Promise<void> {
     if (this.hatched) return;
-    if (this.profile.manifest.species !== "vellum") {
+    if (this.profile.manifest.species !== this.species) {
       throw new Error(
-        `VellumAgent can only run species=vellum profiles (received ${this.profile.manifest.species})`,
+        `This adapter requires species=${this.species} (received ${this.profile.manifest.species})`,
       );
     }
 
@@ -390,6 +411,7 @@ export class VellumAgent implements BaseAgent {
     // work, so a bad EVALS_ASSISTANT_SOURCE fails fast instead of after a
     // jail + hatch attempt.
     const assistantSource = resolveAssistantSource(this.processEnv);
+    const extraJailConfig = await this.extraJailConfig();
 
     let hatchSucceeded = false;
     try {
@@ -450,6 +472,7 @@ export class VellumAgent implements BaseAgent {
         pluginFixturesDir: livePluginInstall
           ? undefined
           : resolve(assistantSource, "plugins"),
+        ...extraJailConfig,
       });
 
       // Forward LLM provider API keys from the eval process env into the
@@ -468,11 +491,10 @@ export class VellumAgent implements BaseAgent {
         this.cliCommand,
         [
           "hatch",
-          "vellum",
+          this.species,
           "--remote",
           "docker",
-          "--source",
-          assistantSource,
+          ...this.sourceHatchArgs(assistantSource),
           "--name",
           this.id,
           "--netns-container",
@@ -481,6 +503,7 @@ export class VellumAgent implements BaseAgent {
           String(gatewayPort),
           "--assistant-ca-cert",
           this.jail.caCertPath,
+          ...this.extraHatchArgs(),
         ],
         {
           env: selectProviderEnv(this.processEnv),
@@ -498,6 +521,8 @@ export class VellumAgent implements BaseAgent {
       // see what the host looked like when this run's containers came
       // up — especially useful when multiple runs overlap via --workers.
       await this.captureResourceStats("post-hatch").catch(() => undefined);
+
+      await this.configureRuntime();
 
       for (const [idx, command] of setupCommands(this.profile).entries()) {
         const setup = await this.runner.run(

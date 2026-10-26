@@ -15,3 +15,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.EVALS_RUNS_DIR ??= mkdtempSync(join(tmpdir(), "evals-test-runs-"));
+
+// Provider tests supply Azure configuration explicitly; local .env settings
+// must not repoint the existing Anthropic fixtures or select a live model.
+process.env.EVALS_LLM_PROVIDER = "anthropic";
+delete process.env.EVALS_LLM_MODEL;

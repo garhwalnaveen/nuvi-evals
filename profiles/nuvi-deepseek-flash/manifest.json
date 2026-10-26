@@ -1,0 +1,8 @@
+{
+  "species": "nuvi",
+  "description": "Nuvi with DeepSeek V4 Flash through direct Cloudflare inference. Auxiliary call sites use the same fixed model. This is not the managed platform transport.",
+  "cloudflare": {
+    "model": "@cf/deepseek-ai/deepseek-v4-flash-0731",
+    "auxiliaryModel": "@cf/deepseek-ai/deepseek-v4-flash-0731"
+  }
+}

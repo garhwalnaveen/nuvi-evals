@@ -37,7 +37,7 @@ RUN id -u mitmproxy >/dev/null 2>&1 \
   && [ "$(id -u mitmproxy)" = "1000" ]
 
 COPY apply-recording-jail.sh entrypoint.sh /opt/recording/
-COPY addon.py usage_parser.py mock_github_handler.py /opt/recording/
+COPY addon.py usage_parser.py mock_github_handler.py cloudflare_auth.py /opt/recording/
 RUN chmod +x /opt/recording/apply-recording-jail.sh /opt/recording/entrypoint.sh \
   && chown -R mitmproxy:mitmproxy /opt/recording
 
